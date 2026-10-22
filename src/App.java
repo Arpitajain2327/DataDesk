@@ -14,7 +14,8 @@ import java.util.List;
 import java.util.Map;
 
 public class App {
-    private static final int PORT = 8081;
+    private static final int PORT = System.getenv("PORT") != null
+        ? Integer.parseInt(System.getenv("PORT")) : 8081;
     private static final DatabaseHelper db = new DatabaseHelper();
     private static final Path WEB_DIR = Paths.get("web").toAbsolutePath().normalize();
 
