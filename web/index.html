@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DataDesk</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    body { background: #f4f6fb; }
+    .navbar { background: linear-gradient(90deg, #1e3a8a, #3b82f6); }
+    .stat-card { border: 0; border-radius: 14px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+    .stat-card .value { font-size: 2rem; font-weight: 700; }
+    .card { border: 0; border-radius: 14px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+    .badge-dept { background: #e0e7ff; color: #3730a3; font-weight: 500; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark mb-4">
+  <div class="container">
+    <span class="navbar-brand fw-semibold">📊 DataDesk</span>
+  </div>
+</nav>
+
+<div class="container pb-5">
+
+  <!-- Dashboard cards -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-4">
+      <div class="card stat-card p-3">
+        <div class="text-muted">Total Employees</div>
+        <div class="value text-primary" id="totalEmployees">0</div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card stat-card p-3">
+        <div class="text-muted">Departments</div>
+        <div class="value text-success" id="totalDepartments">0</div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card stat-card p-3">
+        <div class="text-muted">Average Salary</div>
+        <div class="value text-warning" id="averageSalary">₹0</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart + Departments -->
+  <div class="row g-3 mb-4">
+    <div class="col-lg-7">
+      <div class="card p-3 h-100">
+        <h6 class="mb-3">Employees per Department</h6>
+        <div style="height:260px"><canvas id="deptChart"></canvas></div>
+      </div>
+    </div>
+    <div class="col-lg-5">
+      <div class="card p-3 h-100">
+        <h6 class="mb-3">Departments</h6>
+        <form class="d-flex gap-2 mb-3" id="deptForm">
+          <input type="text" class="form-control" id="deptName" placeholder="New department name" required>
+          <button class="btn btn-success">Add</button>
+        </form>
+        <ul class="list-group list-group-flush" id="deptList"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Employees -->
+  <div class="card p-3">
+    <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+      <h6 class="mb-0 me-auto">Employees</h6>
+      <input type="text" class="form-control w-auto" id="searchBox" placeholder="Search by name...">
+      <select class="form-select w-auto" id="deptFilter"></select>
+      <button class="btn btn-outline-secondary" id="exportBtn">⬇ Export CSV</button>
+      <button class="btn btn-primary" id="addBtn">+ Add Employee</button>
+    </div>
+    <div class="table-responsive">
+      <table class="table align-middle table-hover mb-0">
+        <thead class="table-light">
+          <tr><th>ID</th><th>Name</th><th>Email</th><th>Department</th><th>Role</th><th>Salary</th><th>Bonus</th><th class="text-end">Actions</th></tr>
+        </thead>
+        <tbody id="empBody"></tbody>
+      </table>
+    </div>
+    <div id="emptyMsg" class="text-center text-muted py-4 d-none">No employees found.</div>
+  </div>
+</div>
+
+<!-- Add / Edit modal -->
+<div class="modal fade" id="empModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form class="modal-content" id="empForm">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modalTitle">Add Employee</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="empId">
+        <div class="mb-3">
+          <label class="form-label">Name</label>
+          <input type="text" class="form-control" id="empName" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Email</label>
+          <input type="email" class="form-control" id="empEmail" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Salary (₹)</label>
+          <input type="number" class="form-control" id="empSalary" min="0" step="any" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Role</label>
+          <select class="form-select" id="empRole" required>
+            <option value="Developer">Developer</option>
+            <option value="Manager">Manager</option>
+            <option value="Intern">Intern</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Department</label>
+          <select class="form-select" id="empDept" required></select>
+        </div>
+        <div class="text-danger small" id="formError"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  let employees = [];
+  let chart = null;
+  const modal = new bootstrap.Modal(document.getElementById('empModal'));
+
+  // ----- helpers -----
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s ?? '').replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const money = n => '₹' + Number(n).toLocaleString('en-IN');
+
+  async function api(url, method = 'GET', data) {
+    const opts = { method };
+    if (data) {
+      opts.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+      opts.body = new URLSearchParams(data).toString();
+    }
+    const res = await fetch(url, opts);
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Something went wrong');
+    return json;
+  }
+
+  // ----- departments -----
+  async function loadDepartments() {
+    const depts = await api('/api/departments');
+
+    $('deptList').innerHTML = depts.length ? depts.map(d => `
+      <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+        ${esc(d.name)}
+        <button class="btn btn-sm btn-outline-danger" onclick="deleteDept(${d.id})">Delete</button>
+      </li>`).join('') : '<li class="list-group-item text-muted px-0">No departments yet</li>';
+
+    const current = $('deptFilter').value;
+    $('deptFilter').innerHTML = '<option value="0">All departments</option>' +
+      depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+    $('deptFilter').value = current || '0';
+
+    $('empDept').innerHTML = '<option value="">Select department</option>' +
+      depts.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+  }
+
+  $('deptForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      await api('/api/departments', 'POST', { name: $('deptName').value });
+      $('deptName').value = '';
+      refreshAll();
+    } catch (err) { alert(err.message); }
+  });
+
+  async function deleteDept(id) {
+    if (!confirm('Delete this department?')) return;
+    try {
+      await api('/api/departments?id=' + id, 'DELETE');
+      refreshAll();
+    } catch (err) { alert(err.message); }
+  }
+
+  // ----- employees -----
+  async function loadEmployees() {
+    const q = encodeURIComponent($('searchBox').value);
+    const dept = $('deptFilter').value || 0;
+    employees = await api(`/api/employees?q=${q}&dept=${dept}`);
+
+    $('empBody').innerHTML = employees.map(e => `
+      <tr>
+        <td>${e.id}</td>
+        <td class="fw-semibold">${esc(e.name)}</td>
+        <td>${esc(e.email)}</td>
+        <td><span class="badge badge-dept">${esc(e.department)}</span></td>
+        <td>${esc(e.role)}</td>
+        <td>${money(e.salary)}</td>
+        <td class="text-success">${money(e.bonus)}</td>
+        <td class="text-end">
+          <button class="btn btn-sm btn-outline-primary" onclick="openEdit(${e.id})">Edit</button>
+          <button class="btn btn-sm btn-outline-danger" onclick="deleteEmp(${e.id})">Delete</button>
+        </td>
+      </tr>`).join('');
+    $('emptyMsg').classList.toggle('d-none', employees.length > 0);
+  }
+
+  $('addBtn').addEventListener('click', () => {
+    $('modalTitle').textContent = 'Add Employee';
+    $('empForm').reset();
+    $('empId').value = '';
+    $('formError').textContent = '';
+    modal.show();
+  });
+
+  function openEdit(id) {
+    const e = employees.find(x => x.id === id);
+    if (!e) return;
+    $('modalTitle').textContent = 'Edit Employee';
+    $('empId').value = e.id;
+    $('empName').value = e.name;
+    $('empEmail').value = e.email;
+    $('empSalary').value = e.salary;
+    $('empRole').value = e.role;
+    $('empDept').value = e.departmentId;
+    $('formError').textContent = '';
+    modal.show();
+  }
+
+  $('empForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const id = $('empId').value;
+    const data = {
+      name: $('empName').value,
+      email: $('empEmail').value,
+      salary: $('empSalary').value,
+      role: $('empRole').value,
+      departmentId: $('empDept').value
+    };
+    try {
+      if (id) { data.id = id; await api('/api/employees', 'PUT', data); }
+      else    { await api('/api/employees', 'POST', data); }
+      modal.hide();
+      refreshAll();
+    } catch (err) { $('formError').textContent = err.message; }
+  });
+
+  async function deleteEmp(id) {
+    if (!confirm('Delete this employee?')) return;
+    try {
+      await api('/api/employees?id=' + id, 'DELETE');
+      refreshAll();
+    } catch (err) { alert(err.message); }
+  }
+
+  // ----- search, filter, export -----
+  let timer;
+  $('searchBox').addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(loadEmployees, 250);
+  });
+  $('deptFilter').addEventListener('change', loadEmployees);
+  $('exportBtn').addEventListener('click', () => {
+    const q = encodeURIComponent($('searchBox').value);
+    window.location = `/api/export?q=${q}&dept=${$('deptFilter').value || 0}`;
+  });
+
+  // ----- dashboard -----
+  async function loadStats() {
+    const s = await api('/api/stats');
+    $('totalEmployees').textContent = s.totalEmployees;
+    $('totalDepartments').textContent = s.totalDepartments;
+    $('averageSalary').textContent = money(s.averageSalary);
+
+    if (chart) chart.destroy();
+    chart = new Chart($('deptChart'), {
+      type: 'bar',
+      data: {
+        labels: s.perDepartment.map(d => d.name),
+        datasets: [{
+          label: 'Employees',
+          data: s.perDepartment.map(d => d.count),
+          backgroundColor: '#3b82f6',
+          borderRadius: 6
+        }]
+      },
+      options: {
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+      }
+    });
+  }
+
+  async function refreshAll() {
+    try {
+      await loadDepartments();
+      await Promise.all([loadEmployees(), loadStats()]);
+    } catch (err) { alert('Could not load data: ' + err.message); }
+  }
+
+  refreshAll();
+</script>
+</body>
+</html>
