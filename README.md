@@ -1,5 +1,8 @@
 # DataDesk
 ![DataDesk screenshot](screenshot.png)
+Live demo: https://datadesk-1.onrender.com/
+
+Hosted on free tier: the first load may take about a minute, and demo data may reset.
 A full-stack employee and department data management system built with plain Java, SQLite, and a Bootstrap dashboard.
 
 
