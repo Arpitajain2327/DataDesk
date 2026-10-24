@@ -15,8 +15,13 @@ import java.util.Map;
 
 public class App {
     private static final int PORT = System.getenv("PORT") != null
-        ? Integer.parseInt(System.getenv("PORT")) : 8081;
+            ? Integer.parseInt(System.getenv("PORT")) : 8081;
+
     private static final DatabaseHelper db = new DatabaseHelper();
+    private static final EmployeeService employeeService = new EmployeeService(db);
+    private static final DepartmentService departmentService = new DepartmentService(db);
+    private static final LeaveService leaveService = new LeaveService(db);
+    private static final AuthService auth = new AuthService(db);
     private static final Path WEB_DIR = Paths.get("web").toAbsolutePath().normalize();
 
     public static void main(String[] args) throws Exception {
@@ -26,7 +31,7 @@ public class App {
         System.out.println("Server started at http://localhost:" + PORT);
     }
 
-    // ---------- Router ----------
+    // ---------- Router (controller layer) ----------
     private static void handle(HttpExchange ex) throws IOException {
         try {
             String path = ex.getRequestURI().getPath();
@@ -38,95 +43,147 @@ public class App {
                 params.putAll(parse(body));
             }
 
+            // Web pages are public; the data behind /api/ is protected
+            if (!path.startsWith("/api/")) {
+                serveFile(ex, path);
+                return;
+            }
+
+            // Login is the only open API route
+            if (path.equals("/api/login") && method.equals("POST")) {
+                String token = auth.login(params.get("username"), params.get("password"));
+                ex.getResponseHeaders().add("Set-Cookie",
+                        "SESSION=" + token + "; Path=/; HttpOnly; SameSite=Strict");
+                send(ex, 200, "application/json", auth.getUser(token).toJson());
+                return;
+            }
+
+            String token = getToken(ex);
+            User user = auth.getUser(token);
+            if (user == null) {
+                throw new UnauthorizedException("Please log in");
+            }
+
+            if (path.equals("/api/me")) {
+                send(ex, 200, "application/json", user.toJson());
+                return;
+            }
+            if (path.equals("/api/logout")) {
+                auth.logout(token);
+                ex.getResponseHeaders().add("Set-Cookie", "SESSION=; Path=/; Max-Age=0");
+                send(ex, 200, "application/json", "{\"ok\":true}");
+                return;
+            }
+
+            // Only admins can change data
+            if (!method.equals("GET") && !user.isAdmin()) {
+                throw new ForbiddenException("Only admins can change data");
+            }
+
             if (path.equals("/api/departments")) {
-                departments(ex, method, params);
+                departments(ex, method, params, user);
             } else if (path.equals("/api/employees")) {
-                employees(ex, method, params);
+                employees(ex, method, params, user);
+            } else if (path.equals("/api/leaves")) {
+                leaves(ex, method, params, user);
+            } else if (path.equals("/api/activity") && method.equals("GET")) {
+                if (!user.isAdmin()) throw new ForbiddenException("Only admins can view activity");
+                send(ex, 200, "application/json", toJsonArray(departmentService.recentActivity()));
             } else if (path.equals("/api/stats") && method.equals("GET")) {
-                send(ex, 200, "application/json", db.getStatsJson());
+                send(ex, 200, "application/json", employeeService.statsJson());
             } else if (path.equals("/api/export") && method.equals("GET")) {
                 export(ex, params);
-            } else if (path.startsWith("/api/")) {
-                send(ex, 404, "application/json", "{\"error\":\"Not found\"}");
             } else {
-                serveFile(ex, path);
+                send(ex, 404, "application/json", "{\"error\":\"Not found\"}");
             }
+        } catch (UnauthorizedException e) {
+            send(ex, 401, "application/json", "{\"error\":\"" + Json.escape(e.getMessage()) + "\"}");
+        } catch (ForbiddenException e) {
+            send(ex, 403, "application/json", "{\"error\":\"" + Json.escape(e.getMessage()) + "\"}");
+        } catch (ValidationException e) {
+            send(ex, 400, "application/json", "{\"error\":\"" + Json.escape(e.getMessage()) + "\"}");
+        } catch (NotFoundException e) {
+            send(ex, 404, "application/json", "{\"error\":\"" + Json.escape(e.getMessage()) + "\"}");
         } catch (Exception e) {
             e.printStackTrace();
             send(ex, 500, "application/json", "{\"error\":\"Server error\"}");
         }
     }
 
+    // Reads the SESSION cookie sent by the browser
+    private static String getToken(HttpExchange ex) {
+        String cookies = ex.getRequestHeaders().getFirst("Cookie");
+        if (cookies == null) return null;
+        for (String c : cookies.split(";")) {
+            String[] kv = c.trim().split("=", 2);
+            if (kv.length == 2 && kv[0].equals("SESSION")) return kv[1];
+        }
+        return null;
+    }
+
     // ---------- Departments ----------
-    private static void departments(HttpExchange ex, String method, Map<String, String> p) throws IOException {
+    private static void departments(HttpExchange ex, String method, Map<String, String> p, User user) throws IOException {
         switch (method) {
             case "GET":
-                send(ex, 200, "application/json", toJsonArray(db.getDepartments()));
+                send(ex, 200, "application/json", toJsonArray(departmentService.list()));
                 break;
-            case "POST": {
-                String name = p.getOrDefault("name", "").trim();
-                if (name.isEmpty()) {
-                    send(ex, 400, "application/json", "{\"error\":\"Department name is required\"}");
-                } else if (db.addDepartment(name)) {
-                    send(ex, 200, "application/json", "{\"ok\":true}");
-                } else {
-                    send(ex, 400, "application/json", "{\"error\":\"Department already exists\"}");
-                }
+            case "POST":
+                departmentService.add(user.getUsername(), p.getOrDefault("name", ""));
+                send(ex, 200, "application/json", "{\"ok\":true}");
                 break;
-            }
-            case "DELETE": {
-                int id = toInt(p.get("id"), -1);
-                if (db.deleteDepartment(id)) {
-                    send(ex, 200, "application/json", "{\"ok\":true}");
-                } else {
-                    send(ex, 409, "application/json",
-                            "{\"error\":\"Cannot delete: department has employees or does not exist\"}");
-                }
+            case "DELETE":
+                departmentService.delete(user.getUsername(), toInt(p.get("id"), -1));
+                send(ex, 200, "application/json", "{\"ok\":true}");
                 break;
-            }
             default:
                 send(ex, 405, "application/json", "{\"error\":\"Method not allowed\"}");
         }
     }
 
     // ---------- Employees ----------
-    private static void employees(HttpExchange ex, String method, Map<String, String> p) throws IOException {
+    private static void employees(HttpExchange ex, String method, Map<String, String> p, User user) throws IOException {
         switch (method) {
             case "GET":
                 send(ex, 200, "application/json",
-                        toJsonArray(db.searchEmployees(p.getOrDefault("q", ""), toInt(p.get("dept"), 0))));
+                        toJsonArray(employeeService.search(p.getOrDefault("q", ""), toInt(p.get("dept"), 0))));
                 break;
             case "POST":
-            case "PUT": {
-                String name = p.getOrDefault("name", "").trim();
-                String email = p.getOrDefault("email", "").trim();
-                String role = p.getOrDefault("role", "").trim();
-                int deptId = toInt(p.get("departmentId"), 0);
-                double salary;
-                try {
-                    salary = Double.parseDouble(p.getOrDefault("salary", ""));
-                } catch (NumberFormatException e) {
-                    send(ex, 400, "application/json", "{\"error\":\"Salary must be a number\"}");
-                    return;
-                }
-                if (name.isEmpty() || email.isEmpty() || deptId <= 0 || salary < 0
-                        || !EmployeeFactory.isValidRole(role)) {
-                    send(ex, 400, "application/json", "{\"error\":\"Please fill all fields correctly\"}");
-                    return;
-                }
-                boolean ok = method.equals("POST")
-                        ? db.addEmployee(name, email, salary, deptId, role)
-                        : db.updateEmployee(toInt(p.get("id"), -1), name, email, salary, deptId, role);
-                send(ex, ok ? 200 : 400, "application/json",
-                        ok ? "{\"ok\":true}" : "{\"error\":\"Could not save employee\"}");
+                employeeService.add(user.getUsername(), p.getOrDefault("name", ""), p.getOrDefault("email", ""),
+                        p.getOrDefault("salary", ""), p.getOrDefault("role", "").trim(),
+                        toInt(p.get("departmentId"), 0));
+                send(ex, 200, "application/json", "{\"ok\":true}");
                 break;
-            }
-            case "DELETE": {
-                boolean ok = db.deleteEmployee(toInt(p.get("id"), -1));
-                send(ex, ok ? 200 : 404, "application/json",
-                        ok ? "{\"ok\":true}" : "{\"error\":\"Employee not found\"}");
+            case "PUT":
+                employeeService.update(user.getUsername(), toInt(p.get("id"), -1), p.getOrDefault("name", ""),
+                        p.getOrDefault("email", ""), p.getOrDefault("salary", ""),
+                        p.getOrDefault("role", "").trim(), toInt(p.get("departmentId"), 0));
+                send(ex, 200, "application/json", "{\"ok\":true}");
                 break;
-            }
+            case "DELETE":
+                employeeService.delete(user.getUsername(), toInt(p.get("id"), -1));
+                send(ex, 200, "application/json", "{\"ok\":true}");
+                break;
+            default:
+                send(ex, 405, "application/json", "{\"error\":\"Method not allowed\"}");
+        }
+    }
+
+    // ---------- Leaves ----------
+    private static void leaves(HttpExchange ex, String method, Map<String, String> p, User user) throws IOException {
+        switch (method) {
+            case "GET":
+                send(ex, 200, "application/json", toJsonArray(leaveService.list(p.getOrDefault("status", ""))));
+                break;
+            case "POST":
+                leaveService.apply(user.getUsername(), toInt(p.get("employeeId"), 0),
+                        p.getOrDefault("leaveType", ""), p.getOrDefault("startDate", ""),
+                        p.getOrDefault("endDate", ""), p.getOrDefault("reason", ""));
+                send(ex, 200, "application/json", "{\"ok\":true}");
+                break;
+            case "PUT":
+                leaveService.decide(user.getUsername(), toInt(p.get("id"), -1), p.getOrDefault("status", ""));
+                send(ex, 200, "application/json", "{\"ok\":true}");
+                break;
             default:
                 send(ex, 405, "application/json", "{\"error\":\"Method not allowed\"}");
         }
@@ -134,7 +191,7 @@ public class App {
 
     // ---------- CSV export ----------
     private static void export(HttpExchange ex, Map<String, String> p) throws IOException {
-        List<Employee> list = db.searchEmployees(p.getOrDefault("q", ""), toInt(p.get("dept"), 0));
+        List<Employee> list = employeeService.search(p.getOrDefault("q", ""), toInt(p.get("dept"), 0));
         StringBuilder sb = new StringBuilder("ID,Name,Email,Role,Department,Salary,Bonus\n");
         for (Employee e : list) {
             sb.append(e.getId()).append(",")
@@ -154,7 +211,7 @@ public class App {
         return "\"" + s.replace("\"", "\"\"") + "\"";
     }
 
-    // ---------- Serve the web page ----------
+    // ---------- Serve the web pages ----------
     private static void serveFile(HttpExchange ex, String path) throws IOException {
         if (path.equals("/")) path = "/index.html";
         Path file = WEB_DIR.resolve(path.substring(1)).normalize();
@@ -186,7 +243,6 @@ public class App {
         }
     }
 
-    // Works for any list of Jsonable objects (employees, departments...)
     private static String toJsonArray(List<? extends Jsonable> items) {
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < items.size(); i++) {
